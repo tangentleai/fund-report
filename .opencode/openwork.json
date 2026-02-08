@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "workspace": {
+    "name": "fund-report",
+    "createdAt": 1770557365235,
+    "preset": "starter"
+  },
+  "authorizedRoots": [
+    "/Users/tlh/Code/fund-report"
+  ]
+}
