@@ -75,33 +75,59 @@ def extract_manager_viewpoint(text: str) -> Optional[str]:
     # 清理文本
     text = clean_text(text)
 
+    # 更智能的目录检测和跳过
+    # 我们找§4，但目录也有§4，我们需要找到真正的正文开始
+    # 策略：我们先找第一个"4.2"或"4.3"或"4.4"后面跟着一段很长文本的，那就是正文
+    
+    # 我们先尝试直接找，不跳过§4，让匹配模式更强大，并且让匹配更准确
+    # 然后，我们在匹配到结果后，验证内容是不是正文（不是只有几行或有点）
+    # 我们也可以尝试多种匹配方法，并且如果第一次匹配到的内容太短（比如<100字符），我们继续找
+    # 或者，我们找投资策略和运作分析的所有出现，然后选内容最长的一个！
+    
+    # 我们先直接尝试我们的匹配模式
+    # 不先处理文本，先让原文本完整
+
+    # 收集所有可能的候选观点
+    candidates = []
+    
     # 多种匹配模式（按优先级）
     patterns = [
-        # 模式1: 精确匹配"报告期内基金投资策略和运作分析"
+        # 模式1: 精确匹配"4.X报告期内基金投资策略和运作分析"（点后无空格）
+        r"4\.\d+报告期内基金的投资策略和运作分析\s*[：:]?\s*([\s\S]{20,8000}?)(?=\s*(?:4\.\d+|§|第[五六七八]节|第五节|重要提示|投资组合报告|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标))",
+        # 模式2: 精确匹配"报告期内基金投资策略和运作分析"
         r"报告期内基金投资策略和运作分析\s*[：:]?\s*\n?\s*([^§]+?)(?=\s*(?:§|第[五六七八]节|第五节|重要提示|投资组合报告|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标))",
-        # 模式2: 匹配"投资策略和运作分析"长段落
-        r"投资策略和运作分析\s*[：:]?\s*([\s\S]{200,4000}?)(?=\s*(?:§|第[五六七八]节|第五节|重要提示|投资组合报告|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标))",
-        # 模式3: 匹配"管理人报告"下的内容
-        r"管理人报告.*?基金经理.*?\n\s*([^§]+?)(?=\s*(?:§|第[五六]节|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标))",
-        # 模式4: 匹配"4\.1"或"4.2"基金管理人运用固有资金投资情况前的内容
-        r"4\.\d+\s*基金管理人.*?\n\s*([\s\S]{200,3000}?)(?=4\.\d+|§|第[五六]节|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标)",
+        # 模式3: 匹配"投资策略和运作分析"长段落（降低长度要求从200降到20）
+        r"投资策略和运作分析\s*[：:]?\s*([\s\S]{20,8000}?)(?=\s*(?:§|第[五六七八]节|第五节|重要提示|投资组合报告|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标))",
+        # 模式4: 匹配"4.X投资策略和运作分析"（点后无空格）
+        r"4\.\d+投资策略和运作分析\s*[：:]?\s*([\s\S]{20,8000}?)(?=\s*(?:4\.\d+|§|第[五六七八]节|第五节|重要提示|投资组合报告|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标))",
+        # 模式5: 匹配"4\. X"格式（点后有空格）
+        r"4\.\s*\d+\s*报告期内基金的投资策略和运作分析\s*[：:]?\s*([\s\S]{20,8000}?)(?=\s*(?:4\.\s*\d+|§|第[五六七八]节|第五节|重要提示|投资组合报告|报告期内基金的业绩表现|基金的业绩表现|基金持有人数|基金资产净值预警|重大事项提示|财务指标))",
     ]
 
+    # 尝试所有模式，收集所有候选
     for pattern in patterns:
-        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        if match:
+        matches = list(re.finditer(pattern, text, re.DOTALL | re.IGNORECASE))
+        for match in matches:
             viewpoint = match.group(1).strip()
             # 进一步清洗
             viewpoint = post_clean(viewpoint)
             if validate_viewpoint(viewpoint):
-                return viewpoint
-
-    # 如果都没匹配到，尝试兜底方案：找大段连续的投资相关文本
+                candidates.append(viewpoint)
+    
+    # 如果有候选，选最长的那个
+    if candidates:
+        candidates.sort(key=lambda x: len(x), reverse=True)
+        return candidates[0]
+    
+    # 只有在没有其他候选的情况下，才尝试兜底方案
     fallback = fallback_extract(text)
-    if not fallback:
-        return None
-    fallback = post_clean(fallback)
-    return fallback if validate_viewpoint(fallback) else None
+    if fallback:
+        fallback = post_clean(fallback)
+        if validate_viewpoint(fallback):
+            return fallback
+    
+    # 没有找到任何候选
+    return None
 
 
 def clean_text(text: str) -> str:
@@ -190,29 +216,12 @@ def post_clean(text: str) -> str:
 
 def validate_viewpoint(text: str) -> bool:
     """验证提取的观点是否有效"""
-    if not text or len(text) < 50:
+    if not text or len(text) < 20:
         return False
-
-    # 检查是否包含投资相关关键词
-    investment_keywords = [
-        "市场",
-        "行业",
-        "配置",
-        "投资",
-        "策略",
-        "风险",
-        "机会",
-        "股票",
-        "债券",
-        "仓位",
-        "估值",
-        "盈利",
-        "增长",
-        "经济",
-    ]
-
-    keyword_count = sum(1 for kw in investment_keywords if kw in text)
-    return keyword_count >= 2  # 至少包含2个投资关键词
+    
+    # 只要有内容就返回，不强制要求关键词数量
+    # 这样可以支持简短的观点
+    return True
 
 
 def fallback_extract(text: str) -> Optional[str]:

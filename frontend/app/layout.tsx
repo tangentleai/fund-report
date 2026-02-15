@@ -19,10 +19,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             </Link>
             <div className="nav-links">
               <Link href="/" className="nav-link">
-                首页
-              </Link>
-              <Link href="/my-funds" className="nav-link">
                 我的基金
+              </Link>
+              <Link href="/podcast-generate" className="nav-link">
+                播客生成
               </Link>
             </div>
           </div>
