@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -123,8 +124,8 @@ def get_report_viewpoint(fund_code: str, report_period: str) -> Tuple[str, Dict]
             bool(viewpoint),
         )
     if not viewpoint:
-        viewpoint = "基金经理未披露详细观点。"
-        logger.warning("观点为空，使用默认兜底文案: %s", fund_code)
+        viewpoint = ""
+        logger.warning("观点为空: %s", fund_code)
     return viewpoint, fund
 
 
@@ -133,6 +134,19 @@ def _load_real_report_text(fund_code: str, report_period: str) -> Optional[str]:
     if not pdf_path:
         logger.warning("未能下载真实季报PDF: %s %s", fund_code, report_period)
         return None
+    
+    # 验证文件是否为有效的PDF
+    try:
+        with pdf_path.open("rb") as f:
+            header = f.read(5)
+        if not header.startswith(b"%PDF-"):
+            logger.warning("下载的文件不是有效的PDF，删除: %s", pdf_path)
+            pdf_path.unlink(missing_ok=True)
+            return None
+    except Exception:
+        logger.warning("验证PDF文件失败: %s", pdf_path)
+        return None
+    
     text = _extract_pdf_text(pdf_path)
     if not text:
         logger.warning("PDF解析为空: %s", pdf_path)
@@ -196,42 +210,127 @@ def _download_latest_quarter_report(
         df[date_column] = df[date_column].apply(_parse_date)
         df = df.sort_values(date_column, ascending=False)
     latest = df.iloc[0]
-    url = None
-    if link_column:
-        url = str(latest[link_column])
-    if (not url or not url.startswith("http")) and report_id_column:
-        report_id = str(latest[report_id_column])
-        url = _build_pdf_url_from_report_id(report_id)
-        if url:
-            logger.info("使用报告ID拼接PDF链接: %s", report_id)
-    if not url or not url.startswith("http"):
-        logger.warning("公告链接无效: %s", url)
-        return None
+    
     report_dir = Path(__file__).resolve().parents[1] / "data" / "reports" / fund_code
     report_dir.mkdir(parents=True, exist_ok=True)
     file_path = report_dir / _build_report_filename(latest[name_column], report_period)
+    
     if file_path.exists():
-        logger.info("命中缓存PDF: %s", file_path)
-        return file_path
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        if "application/pdf" in response.headers.get("Content-Type", "").lower():
-            file_path.write_bytes(response.content)
-            logger.info("公告链接为PDF，已下载: %s", file_path)
-            return file_path
-        pdf_url = _extract_pdf_url_from_html(response.text)
-        if not pdf_url:
-            logger.warning("公告页面未解析到PDF链接: %s", url)
-            return None
-        pdf_response = requests.get(pdf_url, timeout=30)
-        pdf_response.raise_for_status()
-        file_path.write_bytes(pdf_response.content)
-        logger.info("从公告页面提取PDF并下载: %s", file_path)
-    except Exception:
-        logger.exception("PDF下载失败: %s", url)
+        try:
+            with file_path.open("rb") as f:
+                header = f.read(5)
+            if header.startswith(b"%PDF-"):
+                logger.info("命中缓存PDF: %s", file_path)
+                return file_path
+            else:
+                logger.warning("缓存文件不是有效的PDF，删除并重新下载: %s", file_path)
+                file_path.unlink()
+        except Exception:
+            logger.warning("验证缓存PDF失败，删除并重新下载: %s", file_path)
+            file_path.unlink(missing_ok=True)
+    
+    urls_to_try = []
+    
+    if link_column:
+        url = str(latest[link_column])
+        if url and url.startswith("http"):
+            urls_to_try.append(url)
+    
+    if report_id_column:
+        report_id = str(latest[report_id_column])
+        urls_to_try.extend(_get_pdf_urls(report_id))
+    
+    if not urls_to_try:
+        logger.warning("没有可用的URL来下载PDF")
         return None
-    return file_path
+    
+    headers = _get_browser_headers()
+    session = requests.Session()
+    
+    for url in urls_to_try:
+        try:
+            logger.info(f"尝试下载PDF: {url}")
+            
+            response = session.get(url, headers=headers, timeout=30, allow_redirects=True)
+            response.raise_for_status()
+            content = response.content
+            
+            if content.startswith(b"%PDF-"):
+                file_path.write_bytes(content)
+                logger.info(f"✓ 成功下载PDF: {file_path}")
+                return file_path
+            
+            if b"<script" in content[:500]:
+                logger.warning(f"遇到反爬虫JS验证，尝试使用Playwright: {url}")
+                success = _download_with_playwright(url, file_path)
+                if success:
+                    return file_path
+                continue
+                
+            pdf_url = _extract_pdf_url_from_html(response.text)
+            if pdf_url:
+                logger.info(f"从HTML中提取到PDF链接: {pdf_url}")
+                pdf_response = session.get(pdf_url, headers=headers, timeout=30)
+                pdf_response.raise_for_status()
+                pdf_content = pdf_response.content
+                if pdf_content.startswith(b"%PDF-"):
+                    file_path.write_bytes(pdf_content)
+                    logger.info(f"✓ 成功下载PDF: {file_path}")
+                    return file_path
+                    
+        except Exception as e:
+            logger.warning(f"下载失败 {url}: {e}")
+            continue
+    
+    logger.warning("所有下载方法都失败了")
+    return None
+
+
+def _download_with_playwright(url: str, output_path: Path) -> bool:
+    """使用 Playwright 下载 PDF（处理反爬虫） - 通过 subprocess 调用独立脚本"""
+    import subprocess
+    import json
+    
+    worker_script = Path(__file__).resolve().parents[1] / "scripts" / "download_pdf_worker.py"
+    
+    if not worker_script.exists():
+        logger.warning(f"下载工作脚本不存在: {worker_script}")
+        return False
+    
+    try:
+        logger.info(f"通过 subprocess 调用下载脚本: {worker_script}")
+        
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(worker_script),
+                url,
+                str(output_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        
+        if result.returncode == 0:
+            try:
+                data = json.loads(result.stdout)
+                if data.get("success"):
+                    logger.info(f"✓ subprocess 下载成功: {data.get('path')}")
+                    return True
+                else:
+                    logger.warning(f"subprocess 下载失败: {data.get('error')}")
+            except json.JSONDecodeError:
+                logger.warning(f"解析 subprocess 输出失败: {result.stdout}")
+        else:
+            logger.warning(f"subprocess 执行失败: {result.stderr}")
+            
+    except subprocess.TimeoutExpired:
+        logger.warning("subprocess 下载超时")
+    except Exception as e:
+        logger.warning(f"subprocess 调用失败: {e}")
+    
+    return False
 
 
 def _build_report_filename(title: str, report_period: str) -> str:
@@ -274,6 +373,33 @@ def _build_pdf_url_from_report_id(report_id: str) -> Optional[str]:
     if not report_id:
         return None
     return f"https://pdf.dfcfw.com/pdf/H2_{report_id}_1.pdf"
+
+
+def _get_pdf_urls(report_id: str) -> list[str]:
+    """生成多个可能的PDF URL格式"""
+    urls = []
+    if report_id.startswith("AN"):
+        urls.append(f"https://pdf.dfcfw.com/pdf/H2_{report_id}_1.pdf")
+        urls.append(f"https://pdf.dfcfw.com/pdf/H3_{report_id}_1.pdf")
+        urls.append(f"https://pdf.dfcfw.com/pdf/H1_{report_id}_1.pdf")
+        urls.append(f"https://pdf.dfcfw.com/pdf/{report_id}_1.pdf")
+    return urls
+
+
+def _get_browser_headers() -> dict:
+    """获取模拟浏览器的请求头"""
+    return {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Cache-Control": "max-age=0",
+    }
 
 
 def _pick_column(columns, candidates) -> Optional[str]:

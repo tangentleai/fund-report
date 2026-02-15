@@ -176,19 +176,25 @@ class EdgeTTSService(TTSService):
             return None
 
     async def _merge_audio_files(self, files: List[str], output: str):
+        logger.info(f"开始合并 {len(files)} 个音频文件...")
+        
         try:
             from pydub import AudioSegment
 
             combined = AudioSegment.empty()
-            for file in files:
+            total_duration = 0.0
+            for i, file in enumerate(files):
                 audio = AudioSegment.from_mp3(file)
+                duration = len(audio) / 1000.0
+                total_duration += duration
+                logger.info(f"  文件 {i}: {Path(file).name}, {duration:.1f}秒")
                 combined += audio
 
             combined.export(output, format="mp3")
-            logger.info(f"✅ 音频合并完成: {output}")
+            logger.info(f"✅ 音频合并完成: {output}, 总时长 {total_duration:.1f}秒")
             return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"pydub 合并失败: {e}")
 
         import shutil
         import subprocess
@@ -221,11 +227,14 @@ class EdgeTTSService(TTSService):
                 )
                 if Path(output).exists():
                     list_file.unlink(missing_ok=True)
+                    logger.info(f"✅ ffmpeg 音频合并完成: {output}")
                     return
-            except Exception:
+            except Exception as e:
+                logger.warning(f"ffmpeg 合并失败: {e}")
                 list_file.unlink(missing_ok=True)
 
         if files:
+            logger.warning(f"⚠️  所有合并方法都失败，只复制第一个文件")
             shutil.copy(files[0], output)
 
     def _get_audio_duration(self, file_path: str) -> Optional[float]:

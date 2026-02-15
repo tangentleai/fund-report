@@ -43,11 +43,26 @@ export default function HomePage() {
     await refreshFunds()
   }
 
+  const handleDeletePodcast = async (podcastId: number) => {
+    if (!deviceId) return
+    await api.deletePodcast(podcastId)
+    await refreshFunds()
+  }
+
   const updateFundPodcast = (fundCode: string, podcast: PodcastItem) => {
     setFunds((prev: FundItem[]) =>
-      prev.map((fund: FundItem) =>
-        fund.code === fundCode ? { ...fund, podcast } : fund
-      )
+      prev.map((fund: FundItem) => {
+        if (fund.code !== fundCode) return fund
+        
+        const existingIndex = fund.podcasts.findIndex(p => p.report_period === podcast.report_period)
+        if (existingIndex >= 0) {
+          const newPodcasts = [...fund.podcasts]
+          newPodcasts[existingIndex] = podcast
+          return { ...fund, podcasts: newPodcasts }
+        } else {
+          return { ...fund, podcasts: [podcast, ...fund.podcasts] }
+        }
+      })
     )
   }
 
@@ -62,13 +77,14 @@ export default function HomePage() {
       updateFundPodcast(fundCode, { id: podcastId, ...data })
       if (data.status === "completed" || data.status === "failed") {
         clearInterval(timers.current[fundCode])
+        await refreshFunds()
       }
     }, 3000)
   }
 
-  const handleGenerate = async (fundCode: string) => {
+  const handleGenerate = async (fundCode: string, reportPeriod: string) => {
     if (!deviceId) return
-    const res = await api.generatePodcast(fundCode, deviceId)
+    const res = await api.generatePodcast(fundCode, deviceId, reportPeriod)
     const data = res.data
     if (!data) return
     updateFundPodcast(fundCode, data)
@@ -121,6 +137,8 @@ export default function HomePage() {
             fund={fund}
             onGenerate={handleGenerate}
             onDelete={handleDeleteFund}
+            onDeletePodcast={handleDeletePodcast}
+            pollPodcast={pollPodcast}
           />
         ))}
       </div>

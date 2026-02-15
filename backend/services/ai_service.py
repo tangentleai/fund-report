@@ -65,12 +65,6 @@ def _generate_with_ark(
     response = client.responses.create(
         model=model,
         input=[{"role": "user", "content": prompt}],
-        tools=[
-            {
-                "type": "web_search",
-                "max_keyword": 2,
-            }
-        ],
     )
     content = response.output_text
     try:
@@ -96,13 +90,23 @@ def _generate_fallback_segments(
         f"大家好，欢迎收听本期基金季报解读。今天我们聊的是{fund_name}，"
         f"基金经理是{manager}，报告期为{report_period}。"
     )
-    summary = viewpoint.strip().replace("\n", " ")
-    summary = summary[:240] + "..." if len(summary) > 240 else summary
     segments = [
         DialogueSegment(speaker="小明", text=intro),
-        DialogueSegment(speaker="小红", text="我们先来看看基金经理的核心观点。"),
-        DialogueSegment(speaker="小明", text=summary),
-        DialogueSegment(speaker="小红", text="整体来看，这份观点强调了行业与估值的取舍。"),
-        DialogueSegment(speaker="小明", text="以上就是本期解读内容，感谢收听。"),
     ]
+    if viewpoint.strip():
+        summary = viewpoint.strip().replace("\n", " ")
+        summary = summary[:240] + "..." if len(summary) > 240 else summary
+        segments.extend([
+            DialogueSegment(speaker="小红", text="我们先来看看基金经理的核心观点。"),
+            DialogueSegment(speaker="小明", text=summary),
+            DialogueSegment(speaker="小红", text="整体来看，这份观点强调了行业与估值的取舍。"),
+        ])
+    else:
+        segments.extend([
+            DialogueSegment(speaker="小红", text="本期报告中，基金经理没有披露详细的投资观点。"),
+            DialogueSegment(speaker="小明", text="虽然没有具体观点，但我们可以持续关注这只基金的后续表现。"),
+        ])
+    segments.append(
+        DialogueSegment(speaker="小明", text="以上就是本期解读内容，感谢收听。")
+    )
     return segments
