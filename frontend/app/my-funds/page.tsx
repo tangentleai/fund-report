@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { api, FundItem, BatchImportResult } from "@/lib/api"
 
 const getRecentQuarters = (): string[] => {
@@ -49,6 +50,7 @@ type ReportModalData = {
 }
 
 export default function MyFundsPage() {
+  const router = useRouter()
   const [funds, setFunds] = useState<FundItem[]>([])
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -66,6 +68,23 @@ export default function MyFundsPage() {
   const [reportLoading, setReportLoading] = useState(false)
   const [reportData, setReportData] = useState<ReportModalData | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
+  const [showQuarterSelectModal, setShowQuarterSelectModal] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<{
+    show: boolean
+    quarter: string
+    current: number
+    total: number
+    currentFund: string
+    results: Array<{
+      fund_code: string
+      fund_name: string
+      success: boolean
+      viewpoint?: string
+      manager?: string
+      error?: string
+    }>
+    cancelled: boolean
+  } | null>(null)
 
   const refreshFunds = useCallback(async () => {
     setLoading(true)
@@ -153,6 +172,110 @@ export default function MyFundsPage() {
     }
   }
 
+  const startBatchFetch = async (quarter: string) => {
+    const MAX_BATCH_SIZE = 3
+    const INTERVAL_MS = 2000
+    const TIMEOUT_MS = 120000
+
+    const results: Array<{
+      fund_code: string
+      fund_name: string
+      success: boolean
+      viewpoint?: string
+      manager?: string
+      error?: string
+    }> = []
+
+    const batchQueue = [...funds]
+    let currentIndex = 0
+    let cancelled = false
+
+    setBatchProgress({
+      show: true,
+      quarter,
+      current: 0,
+      total: funds.length,
+      currentFund: "",
+      results: [],
+      cancelled: false
+    })
+
+    const checkCancelled = () => cancelled
+
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+    const updateProgress = (index: number, fundName: string, newResults: typeof results) => {
+      setBatchProgress(prev => prev ? {
+        ...prev,
+        current: index,
+        currentFund: fundName,
+        results: newResults
+      } : null)
+    }
+
+    while (currentIndex < batchQueue.length && !checkCancelled()) {
+      const batch = batchQueue.slice(currentIndex, currentIndex + MAX_BATCH_SIZE)
+      
+      const batchPromises = batch.map(async (fund) => {
+        try {
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
+          const res = await fetch(
+            `http://localhost:8000/api/funds/${fund.code}/report/${quarter}`,
+            { signal: controller.signal }
+          )
+          clearTimeout(timeoutId)
+
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`)
+          }
+
+          const data = await res.json()
+          return {
+            fund_code: fund.code,
+            fund_name: fund.name,
+            success: true,
+            viewpoint: data.data?.viewpoint || "",
+            manager: data.data?.fund_info?.manager || ""
+          }
+        } catch (e: any) {
+          return {
+            fund_code: fund.code,
+            fund_name: fund.name,
+            success: false,
+            error: e.message || "获取失败"
+          }
+        }
+      })
+
+      const batchResults = await Promise.all(batchPromises)
+      results.push(...batchResults)
+
+      currentIndex += MAX_BATCH_SIZE
+      updateProgress(Math.min(currentIndex, batchQueue.length), batch[batch.length - 1]?.name || "", results)
+
+      if (currentIndex < batchQueue.length && !checkCancelled()) {
+        await delay(INTERVAL_MS)
+      }
+    }
+
+    if (!cancelled) {
+      setBatchProgress(prev => prev ? { ...prev, show: false } : null)
+      sessionStorage.setItem('batchReports_quarter', quarter)
+      sessionStorage.setItem('batchReports_data', JSON.stringify(results))
+      router.push(`/my-funds/reports`)
+    } else {
+      setBatchProgress(prev => prev ? { ...prev, show: false } : null)
+    }
+  }
+
+  const cancelBatchFetch = () => {
+    if (batchProgress) {
+      setBatchProgress(prev => prev ? { ...prev, cancelled: true } : null)
+    }
+  }
+
   return (
     <div className="container">
       <div className="header">
@@ -163,6 +286,9 @@ export default function MyFundsPage() {
         <div className="actions">
           <button className="button secondary" onClick={refreshFunds} disabled={loading}>
             {loading ? "刷新中..." : "刷新"}
+          </button>
+          <button className="button secondary" onClick={() => setShowQuarterSelectModal(true)} disabled={funds.length === 0}>
+            批量获取报告观点
           </button>
           <button className="button" onClick={() => setShowImportModal(true)}>
             批量导入
@@ -445,6 +571,87 @@ export default function MyFundsPage() {
       {toast && (
         <div className={`toast toast-${toast.type}`}>
           {toast.message}
+        </div>
+      )}
+
+      {showQuarterSelectModal && (
+        <div className="modal-overlay" onClick={() => setShowQuarterSelectModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">选择报告期</div>
+              <button className="modal-close" onClick={() => setShowQuarterSelectModal(false)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="muted" style={{ marginBottom: "16px" }}>
+                请选择要批量获取的报告期（共 {funds.length} 只基金）
+              </div>
+              <div className="quarter-select-grid">
+                {RECENT_QUARTERS.map((quarter) => (
+                  <button
+                    key={quarter}
+                    className="quarter-select-button"
+                    onClick={() => {
+                      setShowQuarterSelectModal(false)
+                      startBatchFetch(quarter)
+                    }}
+                  >
+                    {quarter}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {batchProgress && batchProgress.show && (
+        <div className="modal-overlay">
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">批量获取进度</div>
+            </div>
+            <div className="modal-body">
+              <div className="batch-progress-container">
+                <div className="batch-progress-info">
+                  <div className="batch-progress-quarter">
+                    报告期: {batchProgress.quarter}
+                  </div>
+                  <div className="batch-progress-stats">
+                    {batchProgress.current} / {batchProgress.total} 只基金
+                  </div>
+                </div>
+                
+                <div className="batch-progress-bar-wrapper">
+                  <div 
+                    className="batch-progress-bar"
+                    style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+                  />
+                </div>
+                
+                <div className="batch-progress-current">
+                  正在获取: {batchProgress.currentFund || "准备中..."}
+                </div>
+                
+                {batchProgress.results.length > 0 && (
+                  <div className="batch-progress-summary">
+                    <span className="success-count">
+                      ✓ 成功: {batchProgress.results.filter(r => r.success).length}
+                    </span>
+                    <span className="failed-count">
+                      ✗ 失败: {batchProgress.results.filter(r => !r.success).length}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="button danger" onClick={cancelBatchFetch}>
+                取消
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
