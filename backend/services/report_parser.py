@@ -14,6 +14,34 @@ from fund_report_parser import extract_manager_viewpoint, parse_pdf_content
 logger = logging.getLogger(__name__)
 
 
+def _parse_report_period(report_period: str) -> Tuple[int, int]:
+    """解析报告期，返回 (年份, 季度)"""
+    match = re.match(r"(\d{4})Q([1-4])", report_period)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return 0, 0
+
+
+def _parse_report_period_from_title(title: str) -> Tuple[int, int]:
+    """从报告标题中解析报告期，返回 (年份, 季度)"""
+    match = re.search(r"(\d{4})年?第([一二三四1234])季度", title)
+    if match:
+        year = int(match.group(1))
+        q_str = match.group(2)
+        if q_str in ["一", "1"]:
+            quarter = 1
+        elif q_str in ["二", "2"]:
+            quarter = 2
+        elif q_str in ["三", "3"]:
+            quarter = 3
+        elif q_str in ["四", "4"]:
+            quarter = 4
+        else:
+            quarter = 0
+        return year, quarter
+    return 0, 0
+
+
 def _get_fund_info_by_akshare(fund_code: str) -> Optional[Dict]:
     """使用 akshare 获取基金基本信息"""
     try:
@@ -209,7 +237,23 @@ def _download_latest_quarter_report(
     if date_column:
         df[date_column] = df[date_column].apply(_parse_date)
         df = df.sort_values(date_column, ascending=False)
-    latest = df.iloc[0]
+    
+    target_year, target_quarter = _parse_report_period(report_period)
+    selected_report = None
+    
+    for _, row in df.iterrows():
+        title = str(row[name_column])
+        report_year, report_quarter = _parse_report_period_from_title(title)
+        if report_year == target_year and report_quarter == target_quarter:
+            selected_report = row
+            logger.info(f"找到对应报告期: {report_period} - {title}")
+            break
+    
+    if selected_report is None:
+        logger.warning(f"未找到报告期 {report_period} 的报告，使用最新报告")
+        selected_report = df.iloc[0]
+    
+    latest = selected_report
     
     report_dir = Path(__file__).resolve().parents[1] / "data" / "reports" / fund_code
     report_dir.mkdir(parents=True, exist_ok=True)

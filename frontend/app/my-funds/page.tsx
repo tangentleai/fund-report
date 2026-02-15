@@ -24,7 +24,7 @@ const getRecentQuarters = (): string[] => {
   
   const quarters: string[] = []
   
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 3; i++) {
     quarters.push(`${y}Q${q}`)
     q--
     if (q < 1) {
