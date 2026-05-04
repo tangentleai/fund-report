@@ -76,6 +76,61 @@ result = parse_pdf_content(text)
 print(result['manager_viewpoint'])
 ```
 
+## 批量拉取报告观点
+
+使用 `batch_fetch_reports.py` 脚本可以批量拉取自选基金的季报观点，直接调用后端解析函数，无需启动服务。
+
+### 基本用法
+
+```bash
+# 拉取 docs/my-fund-list.md 中所有基金的 2025Q4 报告
+python3 batch_fetch_reports.py
+
+# 指定报告期
+python3 batch_fetch_reports.py -p 2025Q3
+
+# 直接指定基金代码
+python3 batch_fetch_reports.py -c 006567 008272 008318
+
+# 输出到 JSON 文件
+python3 batch_fetch_reports.py -o reports_2025Q4.json
+
+# 组合使用
+python3 batch_fetch_reports.py -c 006567 008272 -p 2025Q3 -o result.json
+```
+
+### 参数说明
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-f/--fund-list` | 基金代码列表文件路径 | `docs/my-fund-list.md` |
+| `-p/--period` | 报告期 | `2025Q4` |
+| `-c/--codes` | 直接指定基金代码（覆盖文件读取） | - |
+| `-o/--output` | 输出 JSON 文件路径（默认 stdout） | - |
+| `--interval` | 每只基金之间的间隔秒数 | `1.0` |
+
+### JSON 输出结构
+
+```json
+{
+  "report_period": "2025Q4",
+  "total": 42,
+  "success_count": 40,
+  "failed_count": 2,
+  "results": [
+    {
+      "fund_code": "022755",
+      "fund_name": "某某基金",
+      "manager": "张三",
+      "report_period": "2025Q4",
+      "viewpoint": "报告期内...",
+      "success": true,
+      "elapsed_seconds": 12.3
+    }
+  ]
+}
+```
+
 ## 支持的基金类型
 
 - ✅ 主动权益类基金（股票型、混合型）
